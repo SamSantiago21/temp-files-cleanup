@@ -68,3 +68,72 @@ Each log entry includes:
 [2026-06-11 14:30:25] User Temp - Deleted: 8, Skipped: 2
 [2026-06-11 14:30:25] Cleanup completed - Total deleted: 65, Total skipped: 5
 ```
+
+## Running Automatically on Startup (No Manual Launch Needed)
+
+By default, this script must be run manually each time. To have it run silently 
+in the background every time you log into Windows — so the hotkey is always 
+available — set it up as a scheduled task.
+
+### Step 1: Create a launcher batch file
+
+In the project folder, create a file named `run_cleanup.bat`:
+
+```bat
+@echo off
+cd /d "D:\path\to\PA_1"
+pythonw cleanup_automation.py
+```
+
+Replace `D:\path\to\PA_1` with the actual path to this project on your machine.  
+`pythonw` runs the script without opening a console window.
+
+### Step 2: Open Task Scheduler
+
+Press `Win + R`, type `taskschd.msc`, and press Enter.
+
+### Step 3: Create the task
+
+- Click **Create Task** (not "Create Basic Task")
+- **General tab:**
+  - Name: `PA1 Cleanup Hotkey`
+  - Check **"Run with highest privileges"**
+  - Configure for: your Windows version
+
+### Step 4: Set the trigger
+
+- **Triggers tab → New**
+- Begin the task: **At log on**
+- Select **Specific user** → your account
+- Click OK
+
+### Step 5: Set the action
+
+- **Actions tab → New**
+- Action: **Start a program**
+- Browse to `run_cleanup.bat`
+- Click OK
+
+### Step 6: Adjust conditions (for laptops)
+
+- **Conditions tab**
+- Uncheck **"Start the task only if the computer is on AC power"**
+
+### Step 7: Save
+
+- Click OK
+- Enter your Windows account password when prompted (required for highest privileges)
+
+### Step 8: Verify
+
+- Right-click the task → **Run**
+- Open Task Manager and confirm `pythonw.exe` is running
+- Press **Alt+Shift+0**, then check `cleanup_log.txt` in your home folder for a new entry
+
+### Step 9: Confirm after reboot
+
+- Restart your laptop and log in normally
+- Press **Alt+Shift+0** without opening anything manually
+- A new entry in `cleanup_log.txt` confirms the listener is running automatically
+
+Once set up, the hotkey is always active in the background — no manual startup required.
