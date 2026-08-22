@@ -1,7 +1,7 @@
 #[cfg(windows)]
 pub mod hotkey {
     use crate::{
-        domain::{Automation, SHUTDOWN_SOURCE, Trigger, TriggerFired},
+        domain::{Automation, Trigger, TriggerFired},
         errors::EngineError,
     };
     use std::{
@@ -20,19 +20,22 @@ pub mod hotkey {
                 HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, RegisterHotKey,
                 UnregisterHotKey, VIRTUAL_KEY,
             },
-            WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, WM_HOTKEY},
+            WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, WM_HOTKEY},
         },
     };
 
-    pub fn spawn_all(automations: &[Automation], tx: Sender<TriggerFired>) {
-        spawn_all_with_stop(automations, tx, Arc::new(AtomicBool::new(false)));
+    pub fn spawn_all(
+        automations: &[Automation],
+        tx: Sender<TriggerFired>,
+    ) -> thread::JoinHandle<()> {
+        spawn_all_with_stop(automations, tx, Arc::new(AtomicBool::new(false)))
     }
 
     pub fn spawn_all_with_stop(
         automations: &[Automation],
         tx: Sender<TriggerFired>,
         stop: Arc<AtomicBool>,
-    ) {
+    ) -> thread::JoinHandle<()> {
         let bindings: Vec<_> = automations
             .iter()
             .filter(|a| a.enabled)
@@ -63,39 +66,34 @@ pub mod hotkey {
             }
             while !stop.load(Ordering::Relaxed) {
                 let mut message = MSG::default();
-                if unsafe { PeekMessageW(&mut message, Some(HWND::default()), 0, 0, PM_REMOVE) }
-                    .as_bool()
+                let hotkey = if unsafe {
+                    PeekMessageW(&mut message, Some(HWND::default()), 0, 0, PM_REMOVE)
+                }
+                .as_bool()
                     && message.message == WM_HOTKEY
-                    && let Some((_, combination, automation_id)) = registered
+                {
+                    registered
                         .iter()
                         .find(|(id, _, _)| *id == message.wParam.0 as i32)
-                {
-                    if tx
+                } else {
+                    None
+                };
+                if let Some((_, combination, automation_id)) = hotkey
+                    && tx
                         .send(TriggerFired {
                             automation_id: automation_id.clone(),
                             source: combination.clone(),
                         })
                         .is_err()
-                    {
-                        break;
-                    }
-                    if combination
-                        .replace(' ', "")
-                        .eq_ignore_ascii_case("ctrl+alt+shift+q")
-                    {
-                        unsafe { PostQuitMessage(0) };
-                        let _ = tx.send(TriggerFired {
-                            automation_id: automation_id.clone(),
-                            source: SHUTDOWN_SOURCE.into(),
-                        });
-                    }
+                {
+                    break;
                 }
                 thread::sleep(Duration::from_millis(50));
             }
             for (id, _, _) in registered {
                 let _ = unsafe { UnregisterHotKey(Some(HWND::default()), id) };
             }
-        });
+        })
     }
 
     pub fn parse(combination: &str) -> Result<(HOT_KEY_MODIFIERS, VIRTUAL_KEY), EngineError> {

@@ -8,7 +8,7 @@ use crate::{
     runtime::{RuntimeHandle, RuntimeStatus},
 };
 use eframe::egui::{self, Color32, RichText};
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -226,6 +226,9 @@ impl DesktopApp {
             if ui.button("View history").clicked() {
                 self.page = Page::History;
             }
+            if ui.button("View automations").clicked() {
+                self.page = Page::Automations;
+            }
         });
     }
 
@@ -251,12 +254,19 @@ impl DesktopApp {
             .history
             .get_history(HistoryFilter::default())
             .unwrap_or_default();
+        let visible: Vec<Automation> = self
+            .config
+            .automations
+            .iter()
+            .filter(|a| {
+                query.is_empty()
+                    || a.name.to_lowercase().contains(&query)
+                    || a.id.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
         let mut action: Option<(String, &'static str)> = None;
-        for a in self.config.automations.iter().filter(|a| {
-            query.is_empty()
-                || a.name.to_lowercase().contains(&query)
-                || a.id.to_lowercase().contains(&query)
-        }) {
+        for a in &visible {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(
@@ -352,7 +362,13 @@ impl DesktopApp {
                     });
                 });
         }
-        if self.config.automations.is_empty() {
+        if visible.is_empty() && !query.is_empty() {
+            empty(
+                ui,
+                "No matching automations",
+                "Clear the search or try a different name or ID.",
+            );
+        } else if self.config.automations.is_empty() {
             empty(
                 ui,
                 "No automations",
@@ -372,12 +388,22 @@ impl DesktopApp {
             "Configure the existing engine model",
         );
         ui.horizontal(|ui| {
-            ui.label("Name");
+            ui.label(RichText::new("Name").strong());
             ui.text_edit_singleline(&mut a.name);
+            ui.checkbox(&mut a.enabled, "Enabled");
         });
+        if a.name.trim().is_empty() {
+            ui.colored_label(
+                Color32::from_rgb(230, 120, 110),
+                "Give this automation a name before saving.",
+            );
+        }
         ui.add_space(8.0);
         ui.separator();
-        ui.heading("Trigger");
+        ui.heading(RichText::new("WHEN").color(Color32::from_rgb(125, 170, 255)));
+        ui.label(
+            RichText::new("Choose when this automation should be considered.").color(Color32::GRAY),
+        );
         ui.horizontal(|ui| {
             ui.label("Type");
             egui::ComboBox::from_id_salt("trigger")
@@ -429,7 +455,11 @@ impl DesktopApp {
             }
         });
         ui.separator();
-        ui.heading("Condition");
+        ui.heading(RichText::new("ONLY IF").color(Color32::from_rgb(205, 170, 95)));
+        ui.label(
+            RichText::new("Optional conditions that must be true before running.")
+                .color(Color32::GRAY),
+        );
         condition_editor(ui, &mut a.conditions);
         ui.separator();
         ui.heading("Execution settings");
@@ -472,7 +502,8 @@ impl DesktopApp {
                 });
         });
         ui.separator();
-        ui.heading("Actions");
+        ui.heading(RichText::new("THEN").color(Color32::from_rgb(115, 190, 140)));
+        ui.label(RichText::new("Actions run in the order shown below.").color(Color32::GRAY));
         let mut remove_action = None;
         for (index, action) in a.actions.iter_mut().enumerate() {
             ui.push_id(index, |ui| {
@@ -557,11 +588,13 @@ impl DesktopApp {
             .get_history(HistoryFilter::default())
             .unwrap_or_default();
         let q = self.history_search.to_lowercase();
+        let mut shown = false;
         for record in records
             .iter()
             .rev()
             .filter(|r| q.is_empty() || format!("{:?}", r).to_lowercase().contains(&q))
         {
+            shown = true;
             history_row(
                 ui,
                 record,
@@ -571,7 +604,13 @@ impl DesktopApp {
                     .map(|a| a.name.as_str()),
             );
         }
-        if records.is_empty() {
+        if !shown && !q.is_empty() {
+            empty(
+                ui,
+                "No matching executions",
+                "Clear the search to return to the full history.",
+            );
+        } else if records.is_empty() {
             empty(
                 ui,
                 "No history",
@@ -601,6 +640,8 @@ impl DesktopApp {
 
 impl eframe::App for DesktopApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        apply_theme(ctx);
+        ctx.request_repaint_after(Duration::from_millis(500));
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("AUTOMATION DESK").strong());
@@ -626,6 +667,21 @@ impl eframe::App for DesktopApp {
             }
         });
     }
+}
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.indent = 18.0;
+    style.visuals = egui::Visuals::dark();
+    style.visuals.window_fill = Color32::from_rgb(25, 29, 36);
+    style.visuals.panel_fill = Color32::from_rgb(19, 23, 29);
+    style.visuals.faint_bg_color = Color32::from_rgb(30, 36, 45);
+    style.visuals.extreme_bg_color = Color32::from_rgb(13, 16, 21);
+    style.visuals.selection.bg_fill = Color32::from_rgb(45, 82, 130);
+    style.visuals.hyperlink_color = Color32::from_rgb(125, 170, 255);
+    ctx.set_style(style);
 }
 
 fn new_automation() -> Automation {
@@ -666,14 +722,19 @@ fn trigger_name(t: &Trigger) -> &'static str {
 }
 fn stat(ui: &mut egui::Ui, label: &str, value: String, color: Color32) {
     ui.group(|ui| {
+        ui.set_min_width(142.0);
         ui.label(RichText::new(label).small().color(Color32::GRAY));
-        ui.label(RichText::new(value).size(26.0).color(color));
+        ui.add_space(3.0);
+        ui.label(RichText::new(value).size(28.0).strong().color(color));
     });
 }
 fn empty(ui: &mut egui::Ui, title: &str, body: &str) {
-    ui.add_space(12.0);
-    ui.label(RichText::new(title).strong());
-    ui.label(RichText::new(body).color(Color32::GRAY));
+    ui.group(|ui| {
+        ui.add_space(6.0);
+        ui.label(RichText::new(title).size(16.0).strong());
+        ui.label(RichText::new(body).color(Color32::GRAY));
+        ui.add_space(6.0);
+    });
 }
 fn history_row(ui: &mut egui::Ui, r: &ExecutionRecord, name: Option<&str>) {
     ui.group(|ui| {
@@ -690,9 +751,13 @@ fn history_row(ui: &mut egui::Ui, r: &ExecutionRecord, name: Option<&str>) {
                     "FAILED"
                 },
             );
-            ui.label(name.unwrap_or(&r.result.automation_id));
+            ui.label(RichText::new(name.unwrap_or(&r.result.automation_id)).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(format!("{}", r.timestamp))
+                ui.label(
+                    RichText::new(format!("Unix {}", r.timestamp))
+                        .small()
+                        .color(Color32::GRAY),
+                )
             });
         });
         ui.label(

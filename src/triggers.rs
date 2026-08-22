@@ -21,15 +21,18 @@ enum Schedule {
     },
 }
 
-pub fn spawn_scheduled_triggers(automations: Vec<Automation>, tx: Sender<TriggerFired>) {
-    spawn_scheduled_triggers_with_stop(automations, tx, Arc::new(AtomicBool::new(false)));
+pub fn spawn_scheduled_triggers(
+    automations: Vec<Automation>,
+    tx: Sender<TriggerFired>,
+) -> thread::JoinHandle<()> {
+    spawn_scheduled_triggers_with_stop(automations, tx, Arc::new(AtomicBool::new(false)))
 }
 
 pub fn spawn_scheduled_triggers_with_stop(
     automations: Vec<Automation>,
     tx: Sender<TriggerFired>,
     stop: Arc<AtomicBool>,
-) {
+) -> thread::JoinHandle<()> {
     let mut schedules = Vec::new();
     for a in automations.into_iter().filter(|a| a.enabled) {
         match a.trigger {
@@ -100,7 +103,7 @@ pub fn spawn_scheduled_triggers_with_stop(
                 return;
             }
         }
-    });
+    })
 }
 fn until(s: &Schedule) -> Duration {
     match s {
@@ -129,14 +132,23 @@ fn parse_daily(value: &str) -> Result<(u64, u64), String> {
 }
 fn next_daily(hour: u64, minute: u64) -> Instant {
     let now = local_clock();
-    let current = now.0 * 60 + now.1;
-    let target = hour * 60 + minute;
-    let minutes = if target > current {
+    let minutes = minutes_until_daily(now.0, now.1, hour, minute);
+    Instant::now() + Duration::from_secs(minutes * 60)
+}
+
+fn minutes_until_daily(
+    current_hour: u64,
+    current_minute: u64,
+    target_hour: u64,
+    target_minute: u64,
+) -> u64 {
+    let current = current_hour * 60 + current_minute;
+    let target = target_hour * 60 + target_minute;
+    if target > current {
         target - current
     } else {
         1_440 - current + target
-    };
-    Instant::now() + Duration::from_secs(minutes * 60)
+    }
 }
 #[cfg(windows)]
 fn local_clock() -> (u64, u64) {
@@ -163,5 +175,14 @@ mod tests {
         assert_eq!(parse_daily(" 18:00 ").unwrap(), (18, 0));
         assert!(parse_daily("24:00").is_err());
         assert!(parse_daily("noon").is_err());
+    }
+
+    #[test]
+    fn daily_schedule_calculates_next_occurrence() {
+        assert_eq!(minutes_until_daily(10, 0, 11, 0), 60);
+        assert_eq!(minutes_until_daily(10, 0, 9, 0), 1_380);
+        assert_eq!(minutes_until_daily(10, 30, 10, 30), 1_440);
+        assert_eq!(minutes_until_daily(23, 59, 0, 0), 1);
+        assert_eq!(minutes_until_daily(23, 59, 23, 59), 1_440);
     }
 }
