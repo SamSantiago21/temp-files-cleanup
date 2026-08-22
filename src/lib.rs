@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod app;
 pub mod conditions;
 pub mod domain;
 pub mod engine;

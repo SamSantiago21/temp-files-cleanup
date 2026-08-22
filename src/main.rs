@@ -23,8 +23,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{message}");
         return Ok(());
     }
-    let config_path = std::env::args()
-        .nth(1)
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--engine") {
+        let config_path = args
+            .next()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("automations.json"));
+        let app = temp_files_cleanup_rust::app::DesktopApp::open(config_path)
+            .map_err(|e| format!("Could not start desktop application: {e}"))?;
+        let options = eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_title("Automation Desk")
+                .with_inner_size([1180.0, 760.0])
+                .with_min_inner_size([900.0, 600.0]),
+            ..Default::default()
+        };
+        eframe::run_native("Automation Desk", options, Box::new(|_| Ok(Box::new(app))))?;
+        return Ok(());
+    }
+    let config_path = args
+        .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("automations.json"));
     let config = if config_path.exists() {
