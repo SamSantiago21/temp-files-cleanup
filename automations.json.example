@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "automations": [
+    {
+      "id": "manual-clean",
+      "name": "Clean temporary files",
+      "enabled": true,
+      "trigger": { "type": "manual" },
+      "conditions": { "type": "empty" },
+      "actions": [
+        { "type": "clean_temporary_files", "directories": ["C:/Users/REPLACE_ME/AppData/Local/Temp"] },
+        { "type": "show_notification", "title": "Cleanup", "message": "Temporary-file cleanup completed." }
+      ],
+      "settings": { "concurrency_policy": "skip_if_running", "failure_policy": "continue" }
+    },
+    {
+      "id": "periodic-clean",
+      "name": "Periodic cleanup",
+      "enabled": false,
+      "trigger": { "type": "interval", "seconds": 3600 },
+      "conditions": { "type": "empty" },
+      "actions": [ { "type": "clean_temporary_files", "directories": null } ],
+      "settings": { "concurrency_policy": "skip_if_running", "failure_policy": "continue" }
+    }
+  ]
+}
