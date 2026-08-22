@@ -6,7 +6,7 @@
 
 An automation has an ID, name, enabled state, trigger, condition tree, actions, and execution policies. Configuration is validated before loading or saving. The engine receives trigger events, checks enabled state and trigger matching, evaluates conditions, executes actions in order, and records each action result in JSONL history.
 
-The desktop application is a local egui shell around the same model, with dashboard, automation editing, history, settings, and manual execution views. The long-running \`--engine\` mode starts scheduled triggers and, on Windows, global hotkey listeners. There is no server or cloud service.
+The desktop application is a local egui shell around the same model, with dashboard, automation editing, history, settings, and manual execution views. Normal desktop launch also starts the background runtime, including scheduled triggers and, on Windows, global hotkey listeners. The long-running \`--engine\` mode remains available as a headless runtime. There is no server or cloud service.
 
 ## Key Features
 
@@ -72,7 +72,7 @@ Unmatched, disabled, or condition-failing automations are skipped. \`skip_if_run
 | \`daily\` | \`{ "type": "daily", "time_hh_mm": "09:00" }\` | The scheduler emits an event at local time; values must be valid HH:MM. |
 | \`hotkey\` | \`{ "type": "hotkey", "combination": "Ctrl+Alt+T" }\` | On Windows, the engine registers a global hotkey. Modifiers include Ctrl, Shift, Alt, and Win; keys include alphanumeric keys, Space, Enter, and F1-F24. |
 
-Scheduled and hotkey sources are started by \`--engine\`; the desktop shell currently exposes manual execution and editing around the same model.
+Scheduled and hotkey sources are started by both normal desktop launch and \`--engine\`; the desktop shell sends manual execution and configuration refresh commands to the same background runtime.
 
 ## Conditions
 
@@ -149,7 +149,7 @@ Examples:
 .\temp_files_cleanup_rust.exe --internal-elevated-clean
 \`\`\`
 
-The first form opens the desktop application. \`--engine\` runs the long-lived scheduler/event-loop mode. A missing configuration file is initialized with an empty schema-version-1 configuration. \`--internal-elevated-clean\` runs default cleanup and is intended for the Windows elevation helper, not arbitrary-path input.
+The first form opens the desktop application and starts its background runtime. \`--engine\` runs the same long-lived scheduler/event-loop mode without the GUI. A missing configuration file is initialized with an empty schema-version-1 configuration. \`--internal-elevated-clean\` runs default cleanup and is intended for the Windows elevation helper, not arbitrary-path input.
 
 ## Windows Integration
 
@@ -212,7 +212,7 @@ The project does not include an installer or prebuilt release binary.
 
 1. Copy [automations.json.example](automations.json.example) to a working configuration path.
 2. Replace placeholder paths and adjust triggers, conditions, actions, and policies.
-3. Start the desktop interface for local editing/manual execution, or start \`--engine\` for scheduled and Windows hotkey events.
+3. Start the desktop interface for editing, manual execution, scheduled triggers, and Windows hotkey events, or start \`--engine\` for headless operation.
 4. Review \`execution.jsonl\` in the application data directory for action results.
 
 The cleanup action removes the contents of its configured roots. Review paths carefully before enabling an automation.
@@ -236,7 +236,7 @@ The binary initializes \`tracing-subscriber\` with an \`info\` environment filte
 
 ## Current Status and Scope
 
-Implemented today: the automation model, JSON persistence/validation, conditions, actions, JSONL history, desktop shell, headless scheduler/event loop, Windows hotkeys, notifications, and elevation helper.
+Implemented today: the automation model, JSON persistence/validation, conditions, actions, JSONL history, desktop shell with a background runtime, headless scheduler/event loop, Windows hotkeys, notifications, and elevation helper.
 
 Not included today: a packaged installer, release binaries, cloud synchronization, a service/daemon installer, or a finalized Windows distribution workflow. Future product/UI work should be treated as planned until implemented in the repository.
 

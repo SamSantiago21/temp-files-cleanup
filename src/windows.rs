@@ -4,7 +4,15 @@ pub mod hotkey {
         domain::{Automation, SHUTDOWN_SOURCE, Trigger, TriggerFired},
         errors::EngineError,
     };
-    use std::{sync::mpsc::Sender, thread};
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc::Sender,
+        },
+        thread,
+        time::Duration,
+    };
     use windows::Win32::{
         Foundation::HWND,
         UI::{
@@ -12,11 +20,19 @@ pub mod hotkey {
                 HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, RegisterHotKey,
                 UnregisterHotKey, VIRTUAL_KEY,
             },
-            WindowsAndMessaging::{GetMessageW, MSG, PostQuitMessage, WM_HOTKEY},
+            WindowsAndMessaging::{MSG, PM_REMOVE, PeekMessageW, PostQuitMessage, WM_HOTKEY},
         },
     };
 
     pub fn spawn_all(automations: &[Automation], tx: Sender<TriggerFired>) {
+        spawn_all_with_stop(automations, tx, Arc::new(AtomicBool::new(false)));
+    }
+
+    pub fn spawn_all_with_stop(
+        automations: &[Automation],
+        tx: Sender<TriggerFired>,
+        stop: Arc<AtomicBool>,
+    ) {
         let bindings: Vec<_> = automations
             .iter()
             .filter(|a| a.enabled)
@@ -45,13 +61,11 @@ pub mod hotkey {
                     Err(error) => tracing::warn!(%error, combination, "invalid global hotkey"),
                 }
             }
-            loop {
+            while !stop.load(Ordering::Relaxed) {
                 let mut message = MSG::default();
-                let result = unsafe { GetMessageW(&mut message, Some(HWND::default()), 0, 0) };
-                if result.0 <= 0 {
-                    break;
-                }
-                if message.message == WM_HOTKEY
+                if unsafe { PeekMessageW(&mut message, Some(HWND::default()), 0, 0, PM_REMOVE) }
+                    .as_bool()
+                    && message.message == WM_HOTKEY
                     && let Some((_, combination, automation_id)) = registered
                         .iter()
                         .find(|(id, _, _)| *id == message.wParam.0 as i32)
@@ -76,6 +90,7 @@ pub mod hotkey {
                         });
                     }
                 }
+                thread::sleep(Duration::from_millis(50));
             }
             for (id, _, _) in registered {
                 let _ = unsafe { UnregisterHotKey(Some(HWND::default()), id) };

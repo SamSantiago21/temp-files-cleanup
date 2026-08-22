@@ -1,6 +1,10 @@
 use crate::domain::{Automation, Trigger, TriggerFired};
 use std::{
-    sync::mpsc::Sender,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Sender,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -18,6 +22,14 @@ enum Schedule {
 }
 
 pub fn spawn_scheduled_triggers(automations: Vec<Automation>, tx: Sender<TriggerFired>) {
+    spawn_scheduled_triggers_with_stop(automations, tx, Arc::new(AtomicBool::new(false)));
+}
+
+pub fn spawn_scheduled_triggers_with_stop(
+    automations: Vec<Automation>,
+    tx: Sender<TriggerFired>,
+    stop: Arc<AtomicBool>,
+) {
     let mut schedules = Vec::new();
     for a in automations.into_iter().filter(|a| a.enabled) {
         match a.trigger {
@@ -46,6 +58,9 @@ pub fn spawn_scheduled_triggers(automations: Vec<Automation>, tx: Sender<Trigger
     }
     thread::spawn(move || {
         loop {
+            if stop.load(Ordering::Relaxed) {
+                return;
+            }
             let Some((index, wait)) = schedules
                 .iter()
                 .enumerate()
@@ -54,7 +69,16 @@ pub fn spawn_scheduled_triggers(automations: Vec<Automation>, tx: Sender<Trigger
             else {
                 return;
             };
-            thread::sleep(wait.max(Duration::from_millis(1)));
+            let deadline = Instant::now() + wait.max(Duration::from_millis(1));
+            while Instant::now() < deadline {
+                if stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(
+                    Duration::from_millis(50)
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
             let (id, schedule) = &mut schedules[index];
             let source = match schedule {
                 Schedule::Interval { seconds, next } => {

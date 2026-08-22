@@ -75,14 +75,14 @@ pub struct AutomationSettings {
     #[serde(default)]
     pub failure_policy: FailurePolicy,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConcurrencyPolicy {
     #[default]
     Allow,
     SkipIfRunning,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FailurePolicy {
     #[default]

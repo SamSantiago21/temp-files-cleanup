@@ -7,5 +7,6 @@ pub mod errors;
 pub mod history;
 pub mod persistence;
 pub mod registry;
+pub mod runtime;
 pub mod triggers;
 pub mod windows;

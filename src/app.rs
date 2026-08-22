@@ -2,20 +2,13 @@
 //! validation, execution and history; this module only adapts it to a desktop UI.
 
 use crate::{
-    actions::SystemActionExecutor,
-    conditions::SystemConditionEvaluator,
     domain::{Action, Automation, Condition, ConditionNode, Trigger},
-    engine::Engine,
     history::{ExecutionRecord, HistoryFilter, HistoryProvider, JsonlHistory},
     persistence::{self, Config},
+    runtime::{RuntimeHandle, RuntimeStatus},
 };
 use eframe::egui::{self, Color32, RichText};
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
-
-type Runtime = Engine<SystemActionExecutor, JsonlHistory, SystemConditionEvaluator>;
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -28,7 +21,7 @@ enum Page {
 pub struct DesktopApp {
     config_path: PathBuf,
     history: Arc<JsonlHistory>,
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: RuntimeHandle,
     config: Config,
     page: Page,
     editor: Option<Automation>,
@@ -36,6 +29,7 @@ pub struct DesktopApp {
     history_search: String,
     error: Option<String>,
     notice: Option<String>,
+    confirm_delete: Option<String>,
 }
 
 impl DesktopApp {
@@ -53,16 +47,11 @@ impl DesktopApp {
             .data_dir()
             .join("execution.jsonl");
         let history = Arc::new(JsonlHistory::open(history_path).map_err(|e| e.to_string())?);
-        let runtime = Engine::new(
-            config.automations.clone(),
-            Arc::new(SystemActionExecutor),
-            history.clone(),
-            SystemConditionEvaluator,
-        );
+        let runtime = RuntimeHandle::start(config.automations.clone(), history.clone());
         Ok(Self {
             config_path,
             history,
-            runtime: Arc::new(Mutex::new(runtime)),
+            runtime,
             config,
             page: Page::Dashboard,
             editor: None,
@@ -70,49 +59,43 @@ impl DesktopApp {
             history_search: String::new(),
             error: None,
             notice: None,
+            confirm_delete: None,
         })
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         match persistence::save(&self.config_path, &self.config) {
             Ok(()) => {
                 self.notice = Some("Automation configuration saved".into());
                 self.error = None;
+                self.refresh_runtime();
+                true
             }
-            Err(e) => self.error = Some(user_error(e.to_string())),
+            Err(e) => {
+                self.error = Some(user_error(e.to_string()));
+                false
+            }
         }
     }
 
-    fn rebuild_runtime(&mut self) {
-        let runtime = Engine::new(
-            self.config.automations.clone(),
-            Arc::new(SystemActionExecutor),
-            self.history.clone(),
-            SystemConditionEvaluator,
-        );
-        self.runtime = Arc::new(Mutex::new(runtime));
+    fn refresh_runtime(&mut self) {
+        if let Err(error) = self.runtime.refresh(self.config.automations.clone()) {
+            self.error = Some(user_error(error));
+        }
     }
 
     fn run(&mut self, id: &str) {
-        let result = self
-            .runtime
-            .lock()
-            .map_err(|_| "Engine is unavailable".to_string())
-            .and_then(|mut e| {
-                e.dispatch(crate::domain::TriggerFired {
-                    automation_id: id.into(),
-                    source: "manual".into(),
-                })
-                .map_err(|e| e.to_string())
-            });
-        match result {
-            Ok(()) => self.notice = Some("Automation executed".into()),
-            Err(e) => self.error = Some(user_error(e)),
+        match self.runtime.trigger(id) {
+            Ok(()) => self.notice = Some("Automation queued".into()),
+            Err(error) => self.error = Some(user_error(error)),
         }
     }
 
+    fn runtime_status(&self) -> RuntimeStatus {
+        self.runtime.status()
+    }
+
     fn navigation(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(18.0);
         ui.label(
             RichText::new("AUTOMATION DESK")
                 .strong()
@@ -141,10 +124,12 @@ impl DesktopApp {
             ui.add_space(5.0);
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            let (label, color) = runtime_display(&self.runtime_status());
+            ui.label(RichText::new(label).small().color(color));
             ui.label(
-                RichText::new("Engine connected")
+                RichText::new("BACKGROUND RUNTIME")
                     .small()
-                    .color(Color32::from_rgb(115, 190, 140)),
+                    .color(Color32::GRAY),
             );
             ui.label(RichText::new("LOCAL MODE").small().color(Color32::GRAY));
         });
@@ -173,6 +158,14 @@ impl DesktopApp {
             .history
             .get_history(HistoryFilter::default())
             .unwrap_or_default();
+        let successful = history
+            .iter()
+            .filter(|record| record.result.success)
+            .count();
+        let failed = history
+            .iter()
+            .filter(|record| !record.result.success)
+            .count();
         ui.horizontal(|ui| {
             stat(ui, "TOTAL AUTOMATIONS", total.to_string(), Color32::WHITE);
             stat(
@@ -188,7 +181,21 @@ impl DesktopApp {
                 history.len().to_string(),
                 Color32::from_rgb(125, 170, 255),
             );
+            stat(
+                ui,
+                "SUCCESSFUL",
+                successful.to_string(),
+                Color32::from_rgb(115, 190, 140),
+            );
+            stat(
+                ui,
+                "FAILED",
+                failed.to_string(),
+                Color32::from_rgb(230, 120, 110),
+            );
         });
+        let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
+        ui.colored_label(runtime_color, format!("Runtime: {runtime_label}"));
         ui.add_space(26.0);
         ui.heading("Recent activity");
         ui.add_space(8.0);
@@ -240,6 +247,10 @@ impl DesktopApp {
         });
         ui.add_space(12.0);
         let query = self.search.to_lowercase();
+        let history = self
+            .history
+            .get_history(HistoryFilter::default())
+            .unwrap_or_default();
         let mut action: Option<(String, &'static str)> = None;
         for a in self.config.automations.iter().filter(|a| {
             query.is_empty()
@@ -263,6 +274,29 @@ impl DesktopApp {
                                 .small()
                                 .color(Color32::GRAY),
                         );
+                        if let Some(last) = history
+                            .iter()
+                            .rev()
+                            .find(|record| record.result.automation_id == a.id)
+                        {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Last: {} ({})",
+                                    last.timestamp,
+                                    if last.result.success {
+                                        "success"
+                                    } else {
+                                        "failed"
+                                    }
+                                ))
+                                .small()
+                                .color(if last.result.success {
+                                    Color32::from_rgb(115, 190, 140)
+                                } else {
+                                    Color32::from_rgb(230, 120, 110)
+                                }),
+                            );
+                        }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Edit").clicked() {
@@ -274,6 +308,9 @@ impl DesktopApp {
                         let label = if a.enabled { "Disable" } else { "Enable" };
                         if ui.button(label).clicked() {
                             action = Some((a.id.clone(), "toggle"));
+                        }
+                        if ui.button("Delete").clicked() {
+                            action = Some((a.id.clone(), "delete"));
                         }
                     });
                 });
@@ -291,10 +328,29 @@ impl DesktopApp {
                         a.enabled = !a.enabled;
                     }
                     self.save();
-                    self.rebuild_runtime();
                 }
+                "delete" => self.confirm_delete = Some(id),
                 _ => {}
             }
+        }
+        if let Some(id) = self.confirm_delete.clone() {
+            egui::Window::new("Delete automation")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label("Delete this automation from the JSON configuration?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete").clicked() {
+                            self.config.automations.retain(|a| a.id != id);
+                            self.confirm_delete = None;
+                            self.save();
+                            self.notice = Some("Automation deleted".into());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.confirm_delete = None;
+                        }
+                    });
+                });
         }
         if self.config.automations.is_empty() {
             empty(
@@ -376,14 +432,81 @@ impl DesktopApp {
         ui.heading("Condition");
         condition_editor(ui, &mut a.conditions);
         ui.separator();
+        ui.heading("Execution settings");
+        ui.horizontal(|ui| {
+            ui.label("Concurrency");
+            egui::ComboBox::from_id_salt("concurrency-policy")
+                .selected_text(match a.settings.concurrency_policy {
+                    crate::domain::ConcurrencyPolicy::Allow => "Allow concurrent runs",
+                    crate::domain::ConcurrencyPolicy::SkipIfRunning => "Skip if running",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut a.settings.concurrency_policy,
+                        crate::domain::ConcurrencyPolicy::Allow,
+                        "Allow concurrent runs",
+                    );
+                    ui.selectable_value(
+                        &mut a.settings.concurrency_policy,
+                        crate::domain::ConcurrencyPolicy::SkipIfRunning,
+                        "Skip if running",
+                    );
+                });
+            ui.label("Failure");
+            egui::ComboBox::from_id_salt("failure-policy")
+                .selected_text(match a.settings.failure_policy {
+                    crate::domain::FailurePolicy::Continue => "Continue",
+                    crate::domain::FailurePolicy::Stop => "Stop",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut a.settings.failure_policy,
+                        crate::domain::FailurePolicy::Continue,
+                        "Continue",
+                    );
+                    ui.selectable_value(
+                        &mut a.settings.failure_policy,
+                        crate::domain::FailurePolicy::Stop,
+                        "Stop on failure",
+                    );
+                });
+        });
+        ui.separator();
         ui.heading("Actions");
-        for action in &mut a.actions {
-            action_editor(ui, action);
+        let mut remove_action = None;
+        for (index, action) in a.actions.iter_mut().enumerate() {
+            ui.push_id(index, |ui| {
+                if action_editor(ui, action) {
+                    remove_action = Some(index);
+                }
+            });
         }
-        if ui.button("＋ Add action").clicked() {
-            a.actions
-                .push(Action::CleanTemporaryFiles { directories: None });
+        if let Some(index) = remove_action {
+            a.actions.remove(index);
         }
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("new-action")
+                .selected_text("Choose action to add")
+                .show_ui(ui, |ui| {
+                    if ui.button("Clean temporary files").clicked() {
+                        a.actions
+                            .push(Action::CleanTemporaryFiles { directories: None });
+                    }
+                    if ui.button("Launch application").clicked() {
+                        a.actions.push(Action::LaunchApplication {
+                            executable: String::new(),
+                            args: vec![],
+                        });
+                    }
+                    if ui.button("Show notification").clicked() {
+                        a.actions.push(Action::ShowNotification {
+                            title: String::new(),
+                            message: String::new(),
+                        });
+                    }
+                });
+            ui.label("Actions execute in order.");
+        });
         ui.add_space(18.0);
         ui.horizontal(|ui| {
             if ui.button("Save automation").clicked() {
@@ -392,16 +515,22 @@ impl DesktopApp {
                 } else if a.actions.is_empty() {
                     self.error = Some("Add at least one action".into());
                 } else {
-                    if let Some(existing) =
-                        self.config.automations.iter_mut().find(|x| x.id == a.id)
+                    let mut candidate = self.config.clone();
+                    if let Some(existing) = candidate.automations.iter_mut().find(|x| x.id == a.id)
                     {
                         *existing = a.clone();
                     } else {
-                        self.config.automations.push(a.clone());
+                        candidate.automations.push(a.clone());
                     }
-                    self.save();
-                    self.rebuild_runtime();
-                    self.editor = None;
+                    match persistence::validate(&candidate) {
+                        Ok(()) => {
+                            self.config = candidate;
+                            if self.save() {
+                                self.editor = None;
+                            }
+                        }
+                        Err(error) => self.error = Some(user_error(error.to_string())),
+                    }
                 }
             }
             if ui.button("Cancel").clicked() {
@@ -463,8 +592,9 @@ impl DesktopApp {
         ui.group(|ui| {
             ui.heading("Engine");
             ui.label("Status");
-            ui.colored_label(Color32::from_rgb(115, 190, 140), "● Connected");
-            ui.label("The desktop app uses the existing local Rust engine and JSON persistence.");
+            let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
+            ui.colored_label(runtime_color, runtime_label);
+            ui.label("The desktop app owns the local background runtime and JSON persistence.");
         });
     }
 }
@@ -474,12 +604,11 @@ impl eframe::App for DesktopApp {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("AUTOMATION DESK").strong());
+                let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
+                ui.colored_label(runtime_color, runtime_label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("LOCAL · ENGINE READY")
-                            .small()
-                            .color(Color32::from_rgb(115, 190, 140)),
-                    );
+                    let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
+                    ui.label(RichText::new(runtime_label).small().color(runtime_color));
                 });
             });
         });
@@ -518,6 +647,14 @@ fn new_automation() -> Automation {
 }
 fn user_error(e: String) -> String {
     format!("Could not complete operation: {e}")
+}
+fn runtime_display(status: &RuntimeStatus) -> (&'static str, Color32) {
+    match status {
+        RuntimeStatus::Starting => ("STARTING", Color32::YELLOW),
+        RuntimeStatus::Running => ("RUNNING", Color32::from_rgb(115, 190, 140)),
+        RuntimeStatus::Stopped => ("STOPPED", Color32::GRAY),
+        RuntimeStatus::Error(_) => ("ERROR", Color32::from_rgb(230, 120, 110)),
+    }
 }
 fn trigger_name(t: &Trigger) -> &'static str {
     match t {
@@ -574,14 +711,28 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
         ConditionNode::Leaf {
             condition: Condition::BatteryBelow { .. },
         } => 2,
-        _ => 0,
+        ConditionNode::And { .. } => 3,
+        ConditionNode::Or { .. } => 4,
+        ConditionNode::Not { .. } => 5,
     };
     egui::ComboBox::from_id_salt("condition")
-        .selected_text(["None", "Time range", "Battery below"][kind])
+        .selected_text(
+            [
+                "None",
+                "Time range",
+                "Battery below",
+                "All (AND)",
+                "Any (OR)",
+                "Not",
+            ][kind],
+        )
         .show_ui(ui, |ui| {
             ui.selectable_value(&mut kind, 0, "None");
             ui.selectable_value(&mut kind, 1, "Time range");
             ui.selectable_value(&mut kind, 2, "Battery below");
+            ui.selectable_value(&mut kind, 3, "All (AND)");
+            ui.selectable_value(&mut kind, 4, "Any (OR)");
+            ui.selectable_value(&mut kind, 5, "Not");
         });
     match (kind, node) {
         (0, n) => *n = ConditionNode::Empty,
@@ -633,11 +784,63 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
                 ui.add(egui::Slider::new(percentage, 0..=100).text("Battery %"));
             }
         }
+        (3, n) | (4, n) => {
+            let is_and = kind == 3;
+            if (is_and && !matches!(n, ConditionNode::And { .. }))
+                || (!is_and && !matches!(n, ConditionNode::Or { .. }))
+            {
+                *n = if is_and {
+                    ConditionNode::And {
+                        children: vec![ConditionNode::Empty],
+                    }
+                } else {
+                    ConditionNode::Or {
+                        children: vec![ConditionNode::Empty],
+                    }
+                };
+            }
+            let children = match n {
+                ConditionNode::And { children } | ConditionNode::Or { children } => children,
+                _ => unreachable!(),
+            };
+            let mut remove = None;
+            for (index, child) in children.iter_mut().enumerate() {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Condition {}", index + 1));
+                        if ui.button("Remove").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                    ui.push_id(index, |ui| condition_editor(ui, child));
+                });
+            }
+            if let Some(index) = remove {
+                children.remove(index);
+            }
+            if ui.button("Add nested condition").clicked() {
+                children.push(ConditionNode::Empty);
+            }
+        }
+        (5, n) => {
+            if !matches!(n, ConditionNode::Not { .. }) {
+                *n = ConditionNode::Not {
+                    child: Box::new(ConditionNode::Empty),
+                };
+            }
+            if let ConditionNode::Not { child } = n {
+                ui.push_id("not-child", |ui| condition_editor(ui, child));
+            }
+        }
         _ => {}
     }
 }
-fn action_editor(ui: &mut egui::Ui, action: &mut Action) {
+fn action_editor(ui: &mut egui::Ui, action: &mut Action) -> bool {
+    let mut remove = false;
     ui.group(|ui| {
+        if ui.button("Remove action").clicked() {
+            remove = true;
+        }
         egui::ComboBox::from_id_salt(format!("action{:?}", action))
             .selected_text(match action {
                 Action::CleanTemporaryFiles { .. } => "Clean temporary files",
@@ -662,8 +865,41 @@ fn action_editor(ui: &mut egui::Ui, action: &mut Action) {
                 }
             });
         let _: () = match action {
-            Action::CleanTemporaryFiles { .. } => {
-                let _ = ui.label("Uses the engine's configured temporary directories.");
+            Action::CleanTemporaryFiles { directories } => {
+                ui.label(
+                    "Cleanup removes the contents of each root; the roots themselves are retained.",
+                );
+                match directories {
+                    Some(paths) => {
+                        let mut remove = None;
+                        for (index, path) in paths.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label("Directory");
+                                ui.text_edit_singleline(path);
+                                if ui.button("Remove").clicked() {
+                                    remove = Some(index);
+                                }
+                            });
+                        }
+                        if let Some(index) = remove {
+                            paths.remove(index);
+                        }
+                        if ui.button("Add directory").clicked() {
+                            paths.push(String::new());
+                        }
+                        if paths.is_empty()
+                            && ui.button("Use default Windows directories").clicked()
+                        {
+                            *directories = None;
+                        }
+                    }
+                    None => {
+                        ui.label("Uses TEMP, WINDIR\\Temp, and WINDIR\\Prefetch when available.");
+                        if ui.button("Use custom directories").clicked() {
+                            *directories = Some(vec![String::new()]);
+                        }
+                    }
+                }
             }
             Action::LaunchApplication { executable, args } => {
                 ui.horizontal(|ui| {
@@ -696,4 +932,5 @@ fn action_editor(ui: &mut egui::Ui, action: &mut Action) {
             }
         };
     });
+    remove
 }

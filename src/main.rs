@@ -1,17 +1,11 @@
-use directories::ProjectDirs;
-use std::{
-    path::PathBuf,
-    sync::{Arc, mpsc},
-};
+use std::path::PathBuf;
 use temp_files_cleanup_rust::actions::ActionExecutor;
 use temp_files_cleanup_rust::domain::Action;
 use temp_files_cleanup_rust::{
     actions::SystemActionExecutor,
-    conditions::SystemConditionEvaluator,
-    engine::Engine,
     history::JsonlHistory,
     persistence::{self, Config},
-    triggers,
+    runtime::{RuntimeHandle, RuntimeStatus},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,19 +46,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         persistence::save(&config_path, &c)?;
         c
     };
-    let dirs = ProjectDirs::from("com", "temp-files-cleanup", "engine")
-        .ok_or("cannot resolve application data directory")?;
-    let history = Arc::new(JsonlHistory::open(dirs.data_dir().join("execution.jsonl"))?);
-    let (tx, rx) = mpsc::channel();
-    triggers::spawn_scheduled_triggers(config.automations.clone(), tx.clone());
-    #[cfg(windows)]
-    temp_files_cleanup_rust::windows::hotkey::spawn_all(&config.automations, tx.clone());
-    let engine = Engine::new(
-        config.automations,
-        Arc::new(SystemActionExecutor),
-        history,
-        SystemConditionEvaluator,
-    );
-    tracing::info!(path=%config_path.display(), "engine started; waiting for events");
-    engine.run(rx).map_err(Into::into)
+    let history_path = directories::ProjectDirs::from("com", "temp-files-cleanup", "engine")
+        .ok_or("cannot resolve application data directory")?
+        .data_dir()
+        .join("execution.jsonl");
+    let history = std::sync::Arc::new(JsonlHistory::open(history_path)?);
+    let runtime = RuntimeHandle::start(config.automations, history);
+    tracing::info!(path=%config_path.display(), "headless runtime started; waiting for events");
+    loop {
+        match runtime.status() {
+            RuntimeStatus::Running | RuntimeStatus::Starting => {
+                std::thread::sleep(std::time::Duration::from_millis(100))
+            }
+            RuntimeStatus::Stopped => return Ok(()),
+            RuntimeStatus::Error(error) => return Err(error.into()),
+        }
+    }
 }
