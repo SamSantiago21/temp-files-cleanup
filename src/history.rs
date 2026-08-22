@@ -56,15 +56,19 @@ impl HistoryProvider for JsonlHistory {
                 .as_secs(),
             result: r.clone(),
         };
-        writeln!(
-            self.file.lock().unwrap(),
-            "{}",
-            serde_json::to_string(&rec)?
-        )?;
+        let mut file = self
+            .file
+            .lock()
+            .map_err(|_| EngineError::Action("history lock poisoned".into()))?;
+        writeln!(file, "{}", serde_json::to_string(&rec)?)?;
         Ok(())
     }
     fn get_history(&self, f: HistoryFilter) -> Result<Vec<ExecutionRecord>, EngineError> {
-        let file = self.file.lock().unwrap().try_clone()?;
+        let file = self
+            .file
+            .lock()
+            .map_err(|_| EngineError::Action("history lock poisoned".into()))?
+            .try_clone()?;
         let mut out = vec![];
         for line in BufReader::new(file).lines() {
             let rec: ExecutionRecord = serde_json::from_str(&line?)?;

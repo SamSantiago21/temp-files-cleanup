@@ -38,7 +38,10 @@ impl<E: ActionExecutor + 'static, H: HistoryProvider + 'static, C: ConditionEval
         let Some(a) = self.automations.get(&e.automation_id).cloned() else {
             return Ok(());
         };
-        if !a.enabled || !self.conditions.evaluate(&a.conditions)? {
+        if !a.enabled
+            || !trigger_matches(&a.trigger, &e.source)
+            || !self.conditions.evaluate(&a.conditions)?
+        {
             return Ok(());
         }
         if matches!(
@@ -50,13 +53,16 @@ impl<E: ActionExecutor + 'static, H: HistoryProvider + 'static, C: ConditionEval
         }
         self.running.insert(a.id.clone(), true);
         for action in &a.actions {
-            let r = match self.executor.execute(action) {
-                Ok(m) => ExecutionResult {
-                    automation_id: a.id.clone(),
-                    action: format!("{action:?}"),
-                    success: true,
-                    message: m,
-                },
+            let (record, failure) = match self.executor.execute(action) {
+                Ok(m) => (
+                    ExecutionResult {
+                        automation_id: a.id.clone(),
+                        action: format!("{action:?}"),
+                        success: true,
+                        message: m,
+                    },
+                    None,
+                ),
                 Err(err) => {
                     let r = ExecutionResult {
                         automation_id: a.id.clone(),
@@ -64,18 +70,22 @@ impl<E: ActionExecutor + 'static, H: HistoryProvider + 'static, C: ConditionEval
                         success: false,
                         message: err.to_string(),
                     };
-                    self.history.record_execution(&r)?;
-                    if matches!(
-                        a.settings.failure_policy,
-                        crate::domain::FailurePolicy::Stop
-                    ) {
-                        self.running.insert(a.id.clone(), false);
-                        return Err(err);
-                    }
-                    r
+                    (r, Some(err))
                 }
             };
-            self.history.record_execution(&r)?
+            if let Err(err) = self.history.record_execution(&record) {
+                self.running.insert(a.id.clone(), false);
+                return Err(err);
+            }
+            if !record.success
+                && matches!(
+                    a.settings.failure_policy,
+                    crate::domain::FailurePolicy::Stop
+                )
+            {
+                self.running.insert(a.id.clone(), false);
+                return Err(failure.expect("failed action must carry its error"));
+            }
         }
         self.running.insert(a.id, false);
         tracing::info!(automation=%a.name,source=%e.source,"automation completed");

@@ -21,7 +21,15 @@ pub fn available_actions() -> Vec<ActionDefinition> {
             name: "Clean Temporary Files".into(),
             description: "Safely removes configured temporary files.".into(),
             category: "System".into(),
-            requires_admin: true,
+            requires_admin: false,
+            configuration_schema: serde_json::json!({"type":"object"}),
+        },
+        ActionDefinition {
+            id: "launch_application".into(),
+            name: "Launch Application".into(),
+            description: "Starts an application with configured arguments.".into(),
+            category: "System".into(),
+            requires_admin: false,
             configuration_schema: serde_json::json!({"type":"object"}),
         },
         ActionDefinition {

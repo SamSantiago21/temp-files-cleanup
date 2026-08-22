@@ -7,6 +7,8 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("invalid time: {0}")]
     InvalidTime(String),
+    #[error("invalid configuration: {0}")]
+    InvalidConfiguration(String),
     #[error("action failed: {0}")]
     Action(String),
     #[error("trigger channel closed")]

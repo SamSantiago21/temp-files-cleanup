@@ -41,11 +41,11 @@ impl SystemConditionEvaluator {
                     now >= s || now <= e
                 })
             }
-            Condition::BatteryBelow { .. } => Ok(false),
+            Condition::BatteryBelow { percentage } => battery_below(*percentage),
         }
     }
 }
-fn parse_minutes(v: &str) -> Result<u16, EngineError> {
+pub(crate) fn parse_minutes(v: &str) -> Result<u16, EngineError> {
     let p: Vec<_> = v.split(':').collect();
     if p.len() != 2 {
         return Err(EngineError::InvalidTime(v.into()));
@@ -60,6 +60,23 @@ fn parse_minutes(v: &str) -> Result<u16, EngineError> {
         return Err(EngineError::InvalidTime(v.into()));
     }
     Ok(h * 60 + m)
+}
+
+#[cfg(windows)]
+fn battery_below(percentage: u8) -> Result<bool, EngineError> {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut status = SYSTEM_POWER_STATUS::default();
+    unsafe { GetSystemPowerStatus(&mut status) }
+        .map_err(|e| EngineError::Action(format!("could not read battery status: {e}")))?;
+    if status.BatteryLifePercent == 255 {
+        return Ok(false);
+    }
+    Ok(status.BatteryLifePercent < percentage)
+}
+
+#[cfg(not(windows))]
+fn battery_below(_percentage: u8) -> Result<bool, EngineError> {
+    Ok(false)
 }
 fn current_minutes() -> Result<u16, EngineError> {
     let s = SystemTime::now()

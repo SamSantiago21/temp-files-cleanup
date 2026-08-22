@@ -29,7 +29,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("cannot resolve application data directory")?;
     let history = Arc::new(JsonlHistory::open(dirs.data_dir().join("execution.jsonl"))?);
     let (tx, rx) = mpsc::channel();
-    triggers::spawn_interval_triggers(config.automations.clone(), tx);
+    triggers::spawn_interval_triggers(config.automations.clone(), tx.clone());
+    triggers::spawn_daily_triggers(config.automations.clone(), tx.clone());
+    #[cfg(windows)]
+    for automation in &config.automations {
+        if automation.enabled {
+            if let temp_files_cleanup_rust::domain::Trigger::Hotkey { combination } =
+                &automation.trigger
+            {
+                temp_files_cleanup_rust::windows::hotkey::spawn(
+                    combination.clone(),
+                    automation.id.clone(),
+                    tx.clone(),
+                );
+            }
+        }
+    }
     let engine = Engine::new(
         config.automations,
         Arc::new(SystemActionExecutor),
