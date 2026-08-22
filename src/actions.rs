@@ -20,8 +20,20 @@ impl ActionExecutor for SystemActionExecutor {
                     .map_err(|e| EngineError::Action(e.to_string()))
             }
             Action::ShowNotification { title, message } => {
-                tracing::info!(title=%title,message=%message,"notification");
-                Ok(format!("{title}: {message}"))
+                #[cfg(windows)]
+                {
+                    tauri_winrt_notification::Toast::new("TempFilesCleanup")
+                        .title(title)
+                        .text1(message)
+                        .show()
+                        .map(|_| format!("{title}: {message}"))
+                        .map_err(|e| EngineError::Action(format!("notification failed: {e}")))
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = (title, message);
+                    Err(EngineError::Action("notifications require Windows".into()))
+                }
             }
         }
     }
@@ -36,17 +48,34 @@ fn clean(dirs: Option<&Vec<String>>) -> Result<String, EngineError> {
         if !p.exists() {
             continue;
         }
-        for entry in fs::read_dir(&p)? {
-            let path = entry?.path();
-            let r = if path.is_dir() {
+        let entries = match fs::read_dir(&p) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(path=%p.display(), %e, "could not enumerate cleanup root");
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!(%e, "could not inspect cleanup entry");
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let r = if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 fs::remove_dir_all(&path)
             } else {
                 fs::remove_file(&path)
             };
             match r {
                 Ok(_) => removed += 1,
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => skipped += 1,
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    skipped += 1;
+                    tracing::warn!(path=%path.display(), %e, "skipping cleanup entry");
+                }
             }
         }
     }
@@ -60,7 +89,8 @@ fn default_dirs() -> Vec<PathBuf> {
         v.push(PathBuf::from(t))
     }
     if let Ok(w) = std::env::var("WINDIR") {
-        v.push(Path::new(&w).join("Temp"))
+        v.push(Path::new(&w).join("Temp"));
+        v.push(Path::new(&w).join("Prefetch"));
     }
     v
 }

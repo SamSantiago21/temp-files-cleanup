@@ -94,3 +94,4 @@ pub struct TriggerFired {
     pub automation_id: String,
     pub source: String,
 }
+pub const SHUTDOWN_SOURCE: &str = "__engine_shutdown__";

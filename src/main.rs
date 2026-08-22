@@ -3,6 +3,8 @@ use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
 };
+use temp_files_cleanup_rust::actions::ActionExecutor;
+use temp_files_cleanup_rust::domain::Action;
 use temp_files_cleanup_rust::{
     actions::SystemActionExecutor,
     conditions::SystemConditionEvaluator,
@@ -14,6 +16,13 @@ use temp_files_cleanup_rust::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    if std::env::args().skip(1).eq(["--internal-elevated-clean"]) {
+        let result =
+            SystemActionExecutor.execute(&Action::CleanTemporaryFiles { directories: None });
+        let message = result?;
+        println!("{message}");
+        return Ok(());
+    }
     let config_path = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -29,22 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("cannot resolve application data directory")?;
     let history = Arc::new(JsonlHistory::open(dirs.data_dir().join("execution.jsonl"))?);
     let (tx, rx) = mpsc::channel();
-    triggers::spawn_interval_triggers(config.automations.clone(), tx.clone());
-    triggers::spawn_daily_triggers(config.automations.clone(), tx.clone());
+    triggers::spawn_scheduled_triggers(config.automations.clone(), tx.clone());
     #[cfg(windows)]
-    for automation in &config.automations {
-        if automation.enabled {
-            if let temp_files_cleanup_rust::domain::Trigger::Hotkey { combination } =
-                &automation.trigger
-            {
-                temp_files_cleanup_rust::windows::hotkey::spawn(
-                    combination.clone(),
-                    automation.id.clone(),
-                    tx.clone(),
-                );
-            }
-        }
-    }
+    temp_files_cleanup_rust::windows::hotkey::spawn_all(&config.automations, tx.clone());
     let engine = Engine::new(
         config.automations,
         Arc::new(SystemActionExecutor),

@@ -18,8 +18,13 @@ Implemented boundaries:
 - explicit `And`/`Or`/`Not`/`Leaf` condition trees;
 - pluggable JSONL execution history;
 - cleanup, process-launch, and notification action executors;
-- blocking `mpsc` execution loop and interval trigger threads;
+- blocking `mpsc` execution loop with one scheduler thread for interval and daily triggers;
+- one Win32 global-hotkey message-loop thread, including validated Ctrl/Alt/Shift combinations;
+- local Windows-time daily scheduling and BatteryBelow evaluation;
+- Windows toast notifications and a controlled internal elevated cleanup operation;
 - registry definitions for future GUI discovery;
 - Windows-specific integration isolated in `src/windows.rs`.
 
-The current environment cannot link the executable because Visual Studio's `link.exe` is not installed. `cargo fmt` passes; run `cargo test` after installing the Windows C++ build tools.
+Windows-specific runtime behavior (hotkeys, UAC, toast delivery, and protected-file cleanup)
+must be verified on Windows with the required C++/Windows SDK tools. Tests in this checkout
+could not run because `dlltool.exe` is unavailable in the current environment.

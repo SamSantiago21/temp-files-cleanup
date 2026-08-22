@@ -72,13 +72,13 @@ pub fn validate(config: &Config) -> Result<(), EngineError> {
         }
         validate_conditions(&automation.conditions)?;
         for action in &automation.actions {
-            if let Action::LaunchApplication { executable, .. } = action {
-                if executable.trim().is_empty() {
-                    return Err(EngineError::InvalidConfiguration(format!(
-                        "automation '{}' has an empty executable",
-                        automation.id
-                    )));
-                }
+            if let Action::LaunchApplication { executable, .. } = action
+                && executable.trim().is_empty()
+            {
+                return Err(EngineError::InvalidConfiguration(format!(
+                    "automation '{}' has an empty executable",
+                    automation.id
+                )));
             }
         }
     }

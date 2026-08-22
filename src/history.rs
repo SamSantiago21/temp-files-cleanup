@@ -74,7 +74,7 @@ impl HistoryProvider for JsonlHistory {
             let rec: ExecutionRecord = serde_json::from_str(&line?)?;
             if f.automation_id
                 .as_ref()
-                .map_or(true, |id| id == &rec.result.automation_id)
+                .is_none_or(|id| id == &rec.result.automation_id)
             {
                 out.push(rec)
             }

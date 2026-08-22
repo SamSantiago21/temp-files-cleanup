@@ -30,9 +30,12 @@ impl<E: ActionExecutor + 'static, H: HistoryProvider + 'static, C: ConditionEval
     }
     pub fn run(mut self, rx: mpsc::Receiver<TriggerFired>) -> Result<(), EngineError> {
         while let Ok(e) = rx.recv() {
+            if e.source == crate::domain::SHUTDOWN_SOURCE {
+                return Ok(());
+            }
             self.dispatch(e)?
         }
-        Err(EngineError::ChannelClosed)
+        Ok(())
     }
     pub fn dispatch(&mut self, e: TriggerFired) -> Result<(), EngineError> {
         let Some(a) = self.automations.get(&e.automation_id).cloned() else {

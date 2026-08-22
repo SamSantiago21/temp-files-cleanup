@@ -2,6 +2,7 @@ use crate::{
     domain::{Condition, ConditionNode},
     errors::EngineError,
 };
+#[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 pub trait ConditionEvaluator {
     fn evaluate(&self, node: &ConditionNode) -> Result<bool, EngineError>;
@@ -79,11 +80,20 @@ fn battery_below(_percentage: u8) -> Result<bool, EngineError> {
     Ok(false)
 }
 fn current_minutes() -> Result<u16, EngineError> {
-    let s = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| EngineError::Action(e.to_string()))?
-        .as_secs();
-    Ok(((s / 60) % 1440) as u16)
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::SystemInformation::GetLocalTime;
+        let now = unsafe { GetLocalTime() };
+        Ok(now.wHour * 60 + now.wMinute)
+    }
+    #[cfg(not(windows))]
+    {
+        let s = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| EngineError::Action(e.to_string()))?
+            .as_secs();
+        Ok(((s / 60) % 1440) as u16)
+    }
 }
 #[cfg(test)]
 mod tests {
