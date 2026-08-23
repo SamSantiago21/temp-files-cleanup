@@ -10,6 +10,13 @@ use crate::{
 use eframe::egui::{self, Color32, RichText};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+const BLUE: Color32 = Color32::from_rgb(112, 166, 255);
+const GREEN: Color32 = Color32::from_rgb(108, 194, 145);
+const RED: Color32 = Color32::from_rgb(232, 116, 108);
+const MUTED: Color32 = Color32::from_rgb(145, 155, 169);
+const CARD: Color32 = Color32::from_rgb(27, 33, 42);
+const CARD_HOVER: Color32 = Color32::from_rgb(34, 42, 53);
+
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Dashboard,
@@ -98,14 +105,11 @@ impl DesktopApp {
     fn navigation(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("AUTOMATION DESK")
+                .size(17.0)
                 .strong()
-                .color(Color32::from_rgb(125, 170, 255)),
+                .color(BLUE),
         );
-        ui.label(
-            RichText::new("Windows control center")
-                .small()
-                .color(Color32::GRAY),
-        );
+        ui.label(RichText::new("Windows control center").small().color(MUTED));
         ui.add_space(28.0);
         for (page, label, icon) in [
             (Page::Dashboard, "Dashboard", "⌂"),
@@ -114,10 +118,23 @@ impl DesktopApp {
             (Page::Settings, "Settings", "⚙"),
         ] {
             let selected = self.page == page;
-            if ui
-                .selectable_label(selected, format!("  {icon}  {label}"))
-                .clicked()
-            {
+            let response = ui.add_sized(
+                [ui.available_width(), 34.0],
+                egui::Button::new(
+                    RichText::new(format!("  {icon}  {label}")).color(if selected {
+                        Color32::WHITE
+                    } else {
+                        MUTED
+                    }),
+                )
+                .fill(if selected {
+                    Color32::from_rgb(39, 71, 112)
+                } else {
+                    Color32::TRANSPARENT
+                })
+                .stroke(egui::Stroke::NONE),
+            );
+            if response.clicked() {
                 self.page = page;
                 self.editor = None;
             }
@@ -125,28 +142,24 @@ impl DesktopApp {
         }
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
             let (label, color) = runtime_display(&self.runtime_status());
-            ui.label(RichText::new(label).small().color(color));
-            ui.label(
-                RichText::new("BACKGROUND RUNTIME")
-                    .small()
-                    .color(Color32::GRAY),
-            );
-            ui.label(RichText::new("LOCAL MODE").small().color(Color32::GRAY));
+            status_chip(ui, label, color);
+            ui.label(RichText::new("BACKGROUND RUNTIME").small().color(MUTED));
+            ui.label(RichText::new("LOCAL MODE").small().color(MUTED));
         });
     }
 
     fn header(&mut self, ui: &mut egui::Ui, title: &str, subtitle: &str) {
         ui.horizontal(|ui| {
-            ui.heading(title);
+            ui.label(RichText::new(title).size(26.0).strong());
             ui.add_space(12.0);
-            ui.label(RichText::new(subtitle).color(Color32::GRAY));
+            ui.label(RichText::new(subtitle).color(MUTED));
         });
         ui.add_space(16.0);
         if let Some(message) = self.notice.take() {
-            ui.colored_label(Color32::from_rgb(115, 190, 140), message);
+            ui.colored_label(GREEN, message);
         }
         if let Some(message) = self.error.take() {
-            ui.colored_label(Color32::from_rgb(230, 120, 110), message);
+            ui.colored_label(RED, message);
         }
     }
 
@@ -158,46 +171,34 @@ impl DesktopApp {
             .history
             .get_history(HistoryFilter::default())
             .unwrap_or_default();
-        let successful = history
-            .iter()
-            .filter(|record| record.result.success)
-            .count();
-        let failed = history
-            .iter()
-            .filter(|record| !record.result.success)
-            .count();
-        ui.horizontal(|ui| {
-            stat(ui, "TOTAL AUTOMATIONS", total.to_string(), Color32::WHITE);
-            stat(
-                ui,
-                "ENABLED",
-                enabled.to_string(),
-                Color32::from_rgb(115, 190, 140),
-            );
-            stat(ui, "DISABLED", (total - enabled).to_string(), Color32::GRAY);
-            stat(
-                ui,
-                "RECENT RUNS",
-                history.len().to_string(),
-                Color32::from_rgb(125, 170, 255),
-            );
-            stat(
-                ui,
-                "SUCCESSFUL",
-                successful.to_string(),
-                Color32::from_rgb(115, 190, 140),
-            );
-            stat(
-                ui,
-                "FAILED",
-                failed.to_string(),
-                Color32::from_rgb(230, 120, 110),
-            );
+        ui.columns(2, |columns| {
+            let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
+            panel(&mut columns[0], |ui| {
+                section_title(ui, "Runtime", "The local automation service");
+                status_chip(ui, runtime_label, runtime_color);
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(match self.runtime_status() {
+                        RuntimeStatus::Running => "Ready for schedules, hotkeys, and manual runs.",
+                        RuntimeStatus::Starting => "Starting the local runtime…",
+                        RuntimeStatus::Stopped => "The runtime is stopped.",
+                        RuntimeStatus::Error(_) => "The runtime needs attention before it can run.",
+                    })
+                    .color(MUTED),
+                );
+            });
+            panel(&mut columns[1], |ui| {
+                section_title(ui, "Automation overview", "Your local system at a glance");
+                ui.horizontal(|ui| {
+                    stat(ui, "TOTAL", total.to_string(), Color32::WHITE);
+                    stat(ui, "ENABLED", enabled.to_string(), GREEN);
+                    stat(ui, "DISABLED", (total - enabled).to_string(), MUTED);
+                });
+            });
         });
-        let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
-        ui.colored_label(runtime_color, format!("Runtime: {runtime_label}"));
-        ui.add_space(26.0);
-        ui.heading("Recent activity");
+        ui.add_space(18.0);
+        ui.add_space(8.0);
+        section_title(ui, "Recent activity", "The latest automation results");
         ui.add_space(8.0);
         if history.is_empty() {
             empty(
@@ -223,10 +224,10 @@ impl DesktopApp {
                 self.editor = Some(new_automation());
                 self.page = Page::Automations;
             }
-            if ui.button("View history").clicked() {
+            if secondary_button(ui, "View history").clicked() {
                 self.page = Page::History;
             }
-            if ui.button("View automations").clicked() {
+            if secondary_button(ui, "View automations").clicked() {
                 self.page = Page::Automations;
             }
         });
@@ -344,11 +345,18 @@ impl DesktopApp {
             }
         }
         if let Some(id) = self.confirm_delete.clone() {
+            let name = self
+                .config
+                .automations
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| "this automation".into());
             egui::Window::new("Delete automation")
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    ui.label("Delete this automation from the JSON configuration?");
+                    ui.label(format!("Delete '{name}' from the JSON configuration?"));
                     ui.horizontal(|ui| {
                         if ui.button("Delete").clicked() {
                             self.config.automations.retain(|a| a.id != id);
@@ -363,11 +371,16 @@ impl DesktopApp {
                 });
         }
         if visible.is_empty() && !query.is_empty() {
-            empty(
-                ui,
-                "No matching automations",
-                "Clear the search or try a different name or ID.",
-            );
+            ui.horizontal(|ui| {
+                empty(
+                    ui,
+                    "No automations match your search",
+                    "Try a different name or clear the filter.",
+                );
+                if secondary_button(ui, "Clear search").clicked() {
+                    self.search.clear();
+                }
+            });
         } else if self.config.automations.is_empty() {
             empty(
                 ui,
@@ -540,7 +553,7 @@ impl DesktopApp {
         });
         ui.add_space(18.0);
         ui.horizontal(|ui| {
-            if ui.button("Save automation").clicked() {
+            if primary_button(ui, "Save automation").clicked() {
                 if a.name.trim().is_empty() {
                     self.error = Some("Automation name cannot be empty".into());
                 } else if a.actions.is_empty() {
@@ -644,12 +657,11 @@ impl eframe::App for DesktopApp {
         ctx.request_repaint_after(Duration::from_millis(500));
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("AUTOMATION DESK").strong());
+                ui.label(RichText::new(page_name(self.page)).strong());
+                ui.label(RichText::new("/  Automation Desk").small().color(MUTED));
                 let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
-                ui.colored_label(runtime_color, runtime_label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
-                    ui.label(RichText::new(runtime_label).small().color(runtime_color));
+                    status_chip(ui, runtime_label, runtime_color);
                 });
             });
         });
@@ -671,17 +683,64 @@ impl eframe::App for DesktopApp {
 
 fn apply_theme(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.item_spacing = egui::vec2(10.0, 9.0);
+    style.spacing.button_padding = egui::vec2(13.0, 8.0);
     style.spacing.indent = 18.0;
     style.visuals = egui::Visuals::dark();
     style.visuals.window_fill = Color32::from_rgb(25, 29, 36);
     style.visuals.panel_fill = Color32::from_rgb(19, 23, 29);
-    style.visuals.faint_bg_color = Color32::from_rgb(30, 36, 45);
+    style.visuals.faint_bg_color = CARD;
+    style.visuals.widgets.inactive.bg_fill = CARD;
+    style.visuals.widgets.hovered.bg_fill = CARD_HOVER;
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(43, 75, 116);
+    style.visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(23, 28, 35);
+    style.visuals.widgets.inactive.fg_stroke.color = MUTED;
+    style.visuals.widgets.hovered.fg_stroke.color = Color32::WHITE;
     style.visuals.extreme_bg_color = Color32::from_rgb(13, 16, 21);
     style.visuals.selection.bg_fill = Color32::from_rgb(45, 82, 130);
-    style.visuals.hyperlink_color = Color32::from_rgb(125, 170, 255);
+    style.visuals.hyperlink_color = BLUE;
     ctx.set_style(style);
+}
+
+fn panel(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none()
+        .fill(CARD)
+        .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgb(49, 59, 73)))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::same(16.0))
+        .show(ui, content);
+}
+
+fn section_title(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.label(RichText::new(title).size(16.0).strong());
+    ui.label(RichText::new(subtitle).small().color(MUTED));
+    ui.add_space(10.0);
+}
+
+fn status_chip(ui: &mut egui::Ui, label: &str, color: Color32) {
+    egui::Frame::none()
+        .fill(color.linear_multiply(0.16))
+        .rounding(egui::Rounding::same(5.0))
+        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(format!("●  {label}"))
+                    .small()
+                    .strong()
+                    .color(color),
+            );
+        });
+}
+
+fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
+            .fill(Color32::from_rgb(44, 91, 150)),
+    )
+}
+
+fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(label).fill(CARD))
 }
 
 fn new_automation() -> Automation {
@@ -697,7 +756,7 @@ fn new_automation() -> Automation {
         enabled: true,
         trigger: Trigger::Manual,
         conditions: ConditionNode::Empty,
-        actions: vec![Action::CleanTemporaryFiles { directories: None }],
+        actions: vec![],
         settings: Default::default(),
     }
 }
@@ -718,6 +777,14 @@ fn trigger_name(t: &Trigger) -> &'static str {
         Trigger::Hotkey { .. } => "Hotkey",
         Trigger::Interval { .. } => "Interval",
         Trigger::Daily { .. } => "Daily",
+    }
+}
+fn page_name(page: Page) -> &'static str {
+    match page {
+        Page::Dashboard => "Dashboard",
+        Page::Automations => "Automations",
+        Page::History => "History",
+        Page::Settings => "Settings",
     }
 }
 fn stat(ui: &mut egui::Ui, label: &str, value: String, color: Color32) {
@@ -754,7 +821,7 @@ fn history_row(ui: &mut egui::Ui, r: &ExecutionRecord, name: Option<&str>) {
             ui.label(RichText::new(name.unwrap_or(&r.result.automation_id)).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    RichText::new(format!("Unix {}", r.timestamp))
+                    RichText::new(human_timestamp(r.timestamp))
                         .small()
                         .color(Color32::GRAY),
                 )
@@ -766,6 +833,92 @@ fn history_row(ui: &mut egui::Ui, r: &ExecutionRecord, name: Option<&str>) {
                 .color(Color32::GRAY),
         );
     });
+}
+
+fn human_timestamp(timestamp: u64) -> String {
+    let Some((year, month, day, hour, minute)) = local_datetime(timestamp) else {
+        return "Unknown time".into();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let Some((today_year, today_month, today_day, _, _)) = local_datetime(now) else {
+        return format!("{year:04}-{month:02}-{day:02} · {hour:02}:{minute:02}");
+    };
+    let clock = format!("{hour:02}:{minute:02}");
+    if (year, month, day) == (today_year, today_month, today_day) {
+        format!("Today · {clock}")
+    } else if timestamp.saturating_add(86_400) >= now
+        && (year, month, day) != (today_year, today_month, today_day)
+    {
+        format!("Yesterday · {clock}")
+    } else {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        format!(
+            "{} {day} · {clock}",
+            MONTHS
+                .get(month.saturating_sub(1) as usize)
+                .unwrap_or(&"Unknown")
+        )
+    }
+}
+
+#[cfg(windows)]
+fn local_datetime(timestamp: u64) -> Option<(u16, u16, u16, u16, u16)> {
+    use windows::Win32::{
+        Foundation::{FILETIME, SYSTEMTIME},
+        System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
+    };
+    let ticks = timestamp
+        .checked_mul(10_000)?
+        .checked_add(116_444_736_000_000_000)?;
+    let utc_file = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    unsafe { FileTimeToSystemTime(&utc_file, &mut utc).ok()? };
+    unsafe { SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).ok()? };
+    Some((
+        local.wYear,
+        local.wMonth,
+        local.wDay,
+        local.wHour,
+        local.wMinute,
+    ))
+}
+
+#[cfg(not(windows))]
+fn local_datetime(timestamp: u64) -> Option<(u16, u16, u16, u16, u16)> {
+    let days = timestamp / 86_400;
+    let seconds = timestamp % 86_400;
+    let (year, month, day) = civil_date(days as i64);
+    Some((
+        year as u16,
+        month as u16,
+        day as u16,
+        (seconds / 3600) as u16,
+        ((seconds % 3600) / 60) as u16,
+    ))
+}
+
+// Gregorian UTC fallback for non-Windows builds; Windows uses the local timezone API above.
+#[cfg(not(windows))]
+fn civil_date(days_since_epoch: i64) -> (i64, i64, i64) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
 }
 fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
     let mut kind = match node {
