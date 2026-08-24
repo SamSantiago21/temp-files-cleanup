@@ -27,6 +27,7 @@ enum Page {
 
 pub struct DesktopApp {
     config_path: PathBuf,
+    history_path: PathBuf,
     history: Arc<JsonlHistory>,
     runtime: RuntimeHandle,
     config: Config,
@@ -53,10 +54,11 @@ impl DesktopApp {
             .ok_or_else(|| "Cannot resolve the application data directory".to_string())?
             .data_dir()
             .join("execution.jsonl");
-        let history = Arc::new(JsonlHistory::open(history_path).map_err(|e| e.to_string())?);
+        let history = Arc::new(JsonlHistory::open(&history_path).map_err(|e| e.to_string())?);
         let runtime = RuntimeHandle::start(config.automations.clone(), history.clone());
         Ok(Self {
             config_path,
+            history_path,
             history,
             runtime,
             config,
@@ -293,7 +295,7 @@ impl DesktopApp {
                             ui.label(
                                 RichText::new(format!(
                                     "Last: {} ({})",
-                                    last.timestamp,
+                                    human_timestamp(last.timestamp),
                                     if last.result.success {
                                         "success"
                                     } else {
@@ -309,7 +311,8 @@ impl DesktopApp {
                             );
                         }
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add_space(4.0);
                         if ui.button("Edit").clicked() {
                             action = Some((a.id.clone(), "edit"));
                         }
@@ -320,7 +323,7 @@ impl DesktopApp {
                         if ui.button(label).clicked() {
                             action = Some((a.id.clone(), "toggle"));
                         }
-                        if ui.button("Delete").clicked() {
+                        if destructive_button(ui, "Delete").clicked() {
                             action = Some((a.id.clone(), "delete"));
                         }
                     });
@@ -356,9 +359,9 @@ impl DesktopApp {
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    ui.label(format!("Delete '{name}' from the JSON configuration?"));
+                    ui.label(format!("Delete \"{name}\" from the JSON configuration?"));
                     ui.horizontal(|ui| {
-                        if ui.button("Delete").clicked() {
+                        if destructive_button(ui, "Delete automation").clicked() {
                             self.config.automations.retain(|a| a.id != id);
                             self.confirm_delete = None;
                             self.save();
@@ -400,9 +403,9 @@ impl DesktopApp {
             },
             "Configure the existing engine model",
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Name").strong());
-            ui.text_edit_singleline(&mut a.name);
+            ui.add(egui::TextEdit::singleline(&mut a.name).desired_width(280.0));
             ui.checkbox(&mut a.enabled, "Enabled");
         });
         if a.name.trim().is_empty() {
@@ -411,13 +414,18 @@ impl DesktopApp {
                 "Give this automation a name before saving.",
             );
         }
+        ui.label(
+            RichText::new("This name is shown in the dashboard and execution history.")
+                .small()
+                .color(MUTED),
+        );
         ui.add_space(8.0);
         ui.separator();
         ui.heading(RichText::new("WHEN").color(Color32::from_rgb(125, 170, 255)));
         ui.label(
             RichText::new("Choose when this automation should be considered.").color(Color32::GRAY),
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Type");
             egui::ComboBox::from_id_salt("trigger")
                 .selected_text(trigger_name(&a.trigger))
@@ -467,6 +475,9 @@ impl DesktopApp {
                 Trigger::Manual => {}
             }
         });
+        if let Some(message) = trigger_validation_message(&a.trigger) {
+            ui.colored_label(RED, message);
+        }
         ui.separator();
         ui.heading(RichText::new("ONLY IF").color(Color32::from_rgb(205, 170, 95)));
         ui.label(
@@ -602,11 +613,19 @@ impl DesktopApp {
             .unwrap_or_default();
         let q = self.history_search.to_lowercase();
         let mut shown = false;
-        for record in records
-            .iter()
-            .rev()
-            .filter(|r| q.is_empty() || format!("{:?}", r).to_lowercase().contains(&q))
-        {
+        for record in records.iter().rev().filter(|r| {
+            q.is_empty()
+                || r.result.automation_id.to_lowercase().contains(&q)
+                || r.result.action.to_lowercase().contains(&q)
+                || r.result.message.to_lowercase().contains(&q)
+                || (if r.result.success {
+                    "success"
+                } else {
+                    "failed"
+                })
+                .contains(&q)
+                || human_timestamp(r.timestamp).to_lowercase().contains(&q)
+        }) {
             shown = true;
             history_row(
                 ui,
@@ -634,19 +653,39 @@ impl DesktopApp {
 
     fn settings(&mut self, ui: &mut egui::Ui) {
         self.header(ui, "Settings", "Storage and engine details");
-        ui.group(|ui| {
-            ui.heading("Storage");
-            ui.label(format!("Configuration\n{}", self.config_path.display()));
-            ui.add_space(5.0);
-            ui.label("History\nApplication data\\execution.jsonl");
+        panel(ui, |ui| {
+            section_title(
+                ui,
+                "Application / storage",
+                "Local files used by Automation Desk",
+            );
+            labeled_value(
+                ui,
+                "Configuration file",
+                &self.config_path.display().to_string(),
+            );
+            labeled_value(
+                ui,
+                "Execution history",
+                &self.history_path.display().to_string(),
+            );
+            if let Some(data_dir) = self.history_path.parent() {
+                labeled_value(ui, "Application data", &data_dir.display().to_string());
+            }
         });
         ui.add_space(12.0);
-        ui.group(|ui| {
-            ui.heading("Engine");
-            ui.label("Status");
+        panel(ui, |ui| {
+            section_title(ui, "Runtime", "Background execution service");
             let (runtime_label, runtime_color) = runtime_display(&self.runtime_status());
             ui.colored_label(runtime_color, runtime_label);
-            ui.label("The desktop app owns the local background runtime and JSON persistence.");
+            ui.label(RichText::new(runtime_description(&self.runtime_status())).color(MUTED));
+        });
+        ui.add_space(12.0);
+        panel(ui, |ui| {
+            section_title(ui, "Application information", "Build and platform details");
+            labeled_value(ui, "Application", "Automation Desk");
+            labeled_value(ui, "Version", env!("CARGO_PKG_VERSION"));
+            labeled_value(ui, "Platform", std::env::consts::OS);
         });
     }
 }
@@ -671,12 +710,12 @@ impl eframe::App for DesktopApp {
             .show(ctx, |ui| self.navigation(ui));
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.set_max_width(1100.0);
-            match self.page {
+            egui::ScrollArea::vertical().show(ui, |ui| match self.page {
                 Page::Dashboard => self.dashboard(ui),
                 Page::Automations => self.automations(ui),
                 Page::History => self.history(ui),
                 Page::Settings => self.settings(ui),
-            }
+            });
         });
     }
 }
@@ -741,6 +780,40 @@ fn primary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 fn secondary_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(egui::Button::new(label).fill(CARD))
+}
+
+fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(label).color(RED)).fill(Color32::from_rgb(56, 29, 34)))
+}
+
+fn labeled_value(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).small().color(MUTED));
+        ui.label(value);
+    });
+    ui.add_space(7.0);
+}
+
+fn runtime_description(status: &RuntimeStatus) -> &'static str {
+    match status {
+        RuntimeStatus::Starting => "The background runtime is starting.",
+        RuntimeStatus::Running => "Schedules, hotkeys, and manual runs are available.",
+        RuntimeStatus::Stopped => "The background runtime is stopped.",
+        RuntimeStatus::Error(_) => "The runtime reported an error and needs attention.",
+    }
+}
+
+fn trigger_validation_message(trigger: &Trigger) -> Option<&'static str> {
+    match trigger {
+        Trigger::Hotkey { combination } if combination.trim().is_empty() => {
+            Some("Enter a hotkey combination.")
+        }
+        Trigger::Daily { time_hh_mm } if crate::conditions::parse_minutes(time_hh_mm).is_err() => {
+            Some("Enter a valid time in HH:MM format.")
+        }
+        Trigger::Interval { seconds: 0 } => Some("Interval must be greater than zero."),
+        _ => None,
+    }
 }
 
 fn new_automation() -> Automation {
@@ -933,7 +1006,7 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
         ConditionNode::Or { .. } => 4,
         ConditionNode::Not { .. } => 5,
     };
-    egui::ComboBox::from_id_salt("condition")
+    egui::ComboBox::from_id_salt("condition-type")
         .selected_text(
             [
                 "None",
@@ -982,6 +1055,11 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
                     ui.label("to");
                     ui.text_edit_singleline(end_hh_mm);
                 });
+                if crate::conditions::parse_minutes(start_hh_mm).is_err()
+                    || crate::conditions::parse_minutes(end_hh_mm).is_err()
+                {
+                    ui.colored_label(RED, "Use valid times in HH:MM format.");
+                }
             }
         }
         (2, n) => {
@@ -1021,24 +1099,49 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
                 ConditionNode::And { children } | ConditionNode::Or { children } => children,
                 _ => unreachable!(),
             };
-            let mut remove = None;
-            for (index, child) in children.iter_mut().enumerate() {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Condition {}", index + 1));
-                        if ui.button("Remove").clicked() {
-                            remove = Some(index);
-                        }
-                    });
-                    ui.push_id(index, |ui| condition_editor(ui, child));
+            let operator = if is_and { "ALL · AND" } else { "ANY · OR" };
+            egui::Frame::group(ui.style())
+                .fill(Color32::from_rgb(23, 29, 37))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    if is_and {
+                        BLUE
+                    } else {
+                        Color32::from_rgb(205, 170, 95)
+                    },
+                ))
+                .inner_margin(egui::Margin::same(10.0))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(operator).strong().color(if is_and {
+                        BLUE
+                    } else {
+                        Color32::from_rgb(205, 170, 95)
+                    }));
+                    let mut remove = None;
+                    for (index, child) in children.iter_mut().enumerate() {
+                        ui.push_id(index, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("Condition {}", index + 1))
+                                        .small()
+                                        .color(MUTED),
+                                );
+                                if secondary_button(ui, "Remove").clicked() {
+                                    remove = Some(index);
+                                }
+                            });
+                            egui::Frame::none()
+                                .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                                .show(ui, |ui| condition_editor(ui, child));
+                        });
+                    }
+                    if let Some(index) = remove {
+                        children.remove(index);
+                    }
+                    if secondary_button(ui, "Add condition").clicked() {
+                        children.push(ConditionNode::Empty);
+                    }
                 });
-            }
-            if let Some(index) = remove {
-                children.remove(index);
-            }
-            if ui.button("Add nested condition").clicked() {
-                children.push(ConditionNode::Empty);
-            }
         }
         (5, n) => {
             if !matches!(n, ConditionNode::Not { .. }) {
@@ -1047,7 +1150,22 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
                 };
             }
             if let ConditionNode::Not { child } = n {
-                ui.push_id("not-child", |ui| condition_editor(ui, child));
+                egui::Frame::group(ui.style())
+                    .fill(Color32::from_rgb(35, 29, 29))
+                    .stroke(egui::Stroke::new(1.0_f32, RED))
+                    .inner_margin(egui::Margin::same(10.0))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("NOT · invert the nested condition")
+                                .strong()
+                                .color(RED),
+                        );
+                        egui::Frame::none()
+                            .inner_margin(egui::Margin::symmetric(12.0, 0.0))
+                            .show(ui, |ui| {
+                                ui.push_id("not-child", |ui| condition_editor(ui, child));
+                            });
+                    });
             }
         }
         _ => {}
@@ -1055,100 +1173,125 @@ fn condition_editor(ui: &mut egui::Ui, node: &mut ConditionNode) {
 }
 fn action_editor(ui: &mut egui::Ui, action: &mut Action) -> bool {
     let mut remove = false;
-    ui.group(|ui| {
-        if ui.button("Remove action").clicked() {
-            remove = true;
+    let (title, icon, color) = match action {
+        Action::CleanTemporaryFiles { .. } => ("Clean temporary files", "▣", GREEN),
+        Action::LaunchApplication { .. } => ("Launch application", "▶", BLUE),
+        Action::ShowNotification { .. } => {
+            ("Show notification", "◆", Color32::from_rgb(205, 170, 95))
         }
-        egui::ComboBox::from_id_salt(format!("action{:?}", action))
-            .selected_text(match action {
-                Action::CleanTemporaryFiles { .. } => "Clean temporary files",
-                Action::LaunchApplication { .. } => "Launch application",
-                Action::ShowNotification { .. } => "Show notification",
-            })
-            .show_ui(ui, |ui| {
-                if ui.button("Clean temporary files").clicked() {
-                    *action = Action::CleanTemporaryFiles { directories: None }
-                }
-                if ui.button("Launch application").clicked() {
-                    *action = Action::LaunchApplication {
-                        executable: String::new(),
-                        args: vec![],
-                    }
-                }
-                if ui.button("Show notification").clicked() {
-                    *action = Action::ShowNotification {
-                        title: String::new(),
-                        message: String::new(),
-                    }
-                }
-            });
-        let _: () = match action {
-            Action::CleanTemporaryFiles { directories } => {
+    };
+    egui::Frame::group(ui.style())
+        .fill(Color32::from_rgb(23, 29, 37))
+        .stroke(egui::Stroke::new(1.0_f32, color))
+        .inner_margin(egui::Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
                 ui.label(
+                    RichText::new(format!("{icon}  {title}"))
+                        .strong()
+                        .color(color),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if destructive_button(ui, "Remove").clicked() {
+                        remove = true;
+                    }
+                });
+            });
+            egui::ComboBox::from_id_salt("action-type")
+                .selected_text(match action {
+                    Action::CleanTemporaryFiles { .. } => "Clean temporary files",
+                    Action::LaunchApplication { .. } => "Launch application",
+                    Action::ShowNotification { .. } => "Show notification",
+                })
+                .show_ui(ui, |ui| {
+                    if ui.button("Clean temporary files").clicked() {
+                        *action = Action::CleanTemporaryFiles { directories: None }
+                    }
+                    if ui.button("Launch application").clicked() {
+                        *action = Action::LaunchApplication {
+                            executable: String::new(),
+                            args: vec![],
+                        }
+                    }
+                    if ui.button("Show notification").clicked() {
+                        *action = Action::ShowNotification {
+                            title: String::new(),
+                            message: String::new(),
+                        }
+                    }
+                });
+            let _: () = match action {
+                Action::CleanTemporaryFiles { directories } => {
+                    ui.label(
                     "Cleanup removes the contents of each root; the roots themselves are retained.",
                 );
-                match directories {
-                    Some(paths) => {
-                        let mut remove = None;
-                        for (index, path) in paths.iter_mut().enumerate() {
-                            ui.horizontal(|ui| {
-                                ui.label("Directory");
-                                ui.text_edit_singleline(path);
-                                if ui.button("Remove").clicked() {
-                                    remove = Some(index);
-                                }
-                            });
+                    match directories {
+                        Some(paths) => {
+                            let mut remove = None;
+                            for (index, path) in paths.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label("Directory");
+                                    ui.text_edit_singleline(path);
+                                    if ui.button("Remove").clicked() {
+                                        remove = Some(index);
+                                    }
+                                });
+                            }
+                            if let Some(index) = remove {
+                                paths.remove(index);
+                            }
+                            if ui.button("Add directory").clicked() {
+                                paths.push(String::new());
+                            }
+                            if paths.is_empty()
+                                && ui.button("Use default Windows directories").clicked()
+                            {
+                                *directories = None;
+                            }
                         }
-                        if let Some(index) = remove {
-                            paths.remove(index);
-                        }
-                        if ui.button("Add directory").clicked() {
-                            paths.push(String::new());
-                        }
-                        if paths.is_empty()
-                            && ui.button("Use default Windows directories").clicked()
-                        {
-                            *directories = None;
-                        }
-                    }
-                    None => {
-                        ui.label("Uses TEMP, WINDIR\\Temp, and WINDIR\\Prefetch when available.");
-                        if ui.button("Use custom directories").clicked() {
-                            *directories = Some(vec![String::new()]);
+                        None => {
+                            ui.label(
+                                "Uses TEMP, WINDIR\\Temp, and WINDIR\\Prefetch when available.",
+                            );
+                            if ui.button("Use custom directories").clicked() {
+                                *directories = Some(vec![String::new()]);
+                            }
                         }
                     }
                 }
-            }
-            Action::LaunchApplication { executable, args } => {
-                ui.horizontal(|ui| {
-                    ui.label("Executable");
-                    ui.text_edit_singleline(executable);
-                });
-                let mut joined = args.join(" ");
-                if ui
-                    .horizontal(|ui| {
-                        ui.label("Arguments");
-                        ui.text_edit_singleline(&mut joined)
-                    })
-                    .inner
-                    .changed()
-                {
-                    *args = joined.split_whitespace().map(str::to_owned).collect();
+                Action::LaunchApplication { executable, args } => {
+                    ui.horizontal(|ui| {
+                        ui.label("Executable");
+                        ui.text_edit_singleline(executable);
+                    });
+                    let mut joined = args.join(" ");
+                    if ui
+                        .horizontal(|ui| {
+                            ui.label("Arguments");
+                            ui.text_edit_singleline(&mut joined)
+                        })
+                        .inner
+                        .changed()
+                    {
+                        *args = joined.split_whitespace().map(str::to_owned).collect();
+                    }
+                    if executable.trim().is_empty() {
+                        ui.colored_label(RED, "Choose an executable before saving.");
+                    }
+                    let _ = ui.label("");
                 }
-                let _ = ui.label("");
-            }
-            Action::ShowNotification { title, message } => {
-                ui.horizontal(|ui| {
-                    ui.label("Title");
-                    ui.text_edit_singleline(title);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Message");
-                    ui.text_edit_singleline(message);
-                });
-                let _ = ui.label("");
-            }
-        };
-    });
+                Action::ShowNotification { title, message } => {
+                    ui.horizontal(|ui| {
+                        ui.label("Title");
+                        ui.text_edit_singleline(title);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Message");
+                        ui.text_edit_singleline(message);
+                    });
+                    let _ = ui.label("");
+                }
+            };
+        });
     remove
 }
